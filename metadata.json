@@ -1,0 +1,6 @@
+{
+  "name": "Spotify Playlist Generator",
+  "description": "Generate custom Spotify playlists featuring the 4 most popular songs from 2 to 10 of your favorite artists.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
