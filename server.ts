@@ -1353,10 +1353,16 @@ Return a single JSON object strictly matching this schema:
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+if (process.env.NODE_ENV !== "production") {
+    const PORT = 3000;
+      app.listen(PORT, "0.0.0.0", () => {
+          console.log(`Server running locally on port ${PORT}`);
+            });
+}
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
 }
 
 startServer();
+
+export default app
+
