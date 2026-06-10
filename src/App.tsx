@@ -51,6 +51,14 @@ export default function App() {
   const [customInstructions, setCustomInstructions] = useState("");
   const [artistSearchQuery, setArtistSearchQuery] = useState("");
   const [isPresetsCollapsed, setIsPresetsCollapsed] = useState(true);
+  const [spotifyRankingOnly, setSpotifyRankingOnly] = useState(false);
+
+  const handleSpotifyRankingOnlyChange = (checked: boolean) => {
+    setSpotifyRankingOnly(checked);
+    if (checked) {
+      setSelectedVibe("default");
+    }
+  };
 
   const getVibeName = (vibeId: string) => {
     const v = PRESET_VIBES.find((item) => item.id === vibeId);
@@ -364,8 +372,8 @@ export default function App() {
 
   // Generate Playlist triggers
   const handleGeneratePlaylist = async () => {
-    if (selectedArtists.length < 2) {
-      setError("Please select at least 2 artists to blend.");
+    if (selectedArtists.length < 1) {
+      setError("Please select at least 1 artist to blend.");
       return;
     }
     if (selectedArtists.length > 10) {
@@ -409,6 +417,9 @@ export default function App() {
           artists: selectedArtists,
           vibePreference: moodInstruction,
           songsPerArtist,
+          vibeId: selectedVibe,
+          spotifyRankingOnly,
+          userAccessToken: accessToken,
         }),
       });
 
@@ -569,7 +580,7 @@ export default function App() {
   // Helper to trigger custom CSV file download
   const handleDownloadCSV = () => {
     if (!playlist) return;
-    const headers = ["#", "Artist", "Track Title", "Album", "Year", "Duration", "Popularity 0-100", "Trivia Trivia Facts"];
+    const headers = ["#", "Artist", "Track Title", "Album", "Year", "Duration", "Trivia Trivia Facts"];
     const rows = reorderedTracks.map((t, i) => [
       i + 1,
       `"${t.artistName.replace(/"/g, '""')}"`,
@@ -577,7 +588,6 @@ export default function App() {
       `"${t.album.replace(/"/g, '""')}"`,
       t.releaseYear,
       t.duration,
-      t.popularity,
       `"${t.fact.replace(/"/g, '""')}"`,
     ]);
 
@@ -689,7 +699,7 @@ export default function App() {
                       Blend Parameters
                     </h2>
                     <p className="text-xs text-zinc-400 mt-1">
-                      Choose between 2 and 10 artists. The engine compiles their top 20 songs and selects 4 at random (using server-to-server Spotify API credentials, if configured) to create a fresh, dynamic blend on every generation!
+                      Choose between 1 and 10 artists. The engine compiles their top 20 songs and selects 4 at random (using server-to-server Spotify API credentials, if configured) to create a fresh, dynamic blend on every generation!
                     </p>
                   </div>
 
@@ -788,10 +798,10 @@ export default function App() {
                     </div>
 
                     {/* Alert checks */}
-                    {selectedArtists.length > 0 && selectedArtists.length < 2 && (
+                    {selectedArtists.length === 0 && (
                       <div className="mt-2.5 flex items-center gap-1.5 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-lg">
                         <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                        Please select at least 2 artists to generate.
+                        Please select at least 1 artist to generate.
                       </div>
                     )}
                   </div>
@@ -875,16 +885,40 @@ export default function App() {
 
               {/* Right Column: Preferences Sidebar */}
               <div className="lg:col-span-4 space-y-6">
+                {/* Spotify Ranking Only Checkbox Option */}
+                <div className="bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl backdrop-blur-md shadow-xl transition-all duration-300">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="spotifyRankingCheck" className="flex flex-col gap-0.5 cursor-pointer select-none pr-2">
+                      <span className="text-xs font-semibold text-white flex items-center gap-1.5">
+                        Spotify Ranking Only
+                        <span className="text-[9px] font-mono uppercase bg-emerald-950/40 text-[#1DB954] border border-[#1DB954]/20 px-1.5 py-0.2 rounded font-semibold">Pure</span>
+                      </span>
+                      <span className="text-[10px] text-zinc-400">Skip AI and build directly from Spotify's live ranking</span>
+                    </label>
+                    <input
+                      id="spotifyRankingCheck"
+                      type="checkbox"
+                      checked={spotifyRankingOnly}
+                      disabled={false}
+                      onChange={(e) => handleSpotifyRankingOnlyChange(e.target.checked)}
+                      className="w-4 h-4 rounded text-[#1DB954] bg-zinc-950 border-zinc-800 accent-[#1DB954] focus:ring-[#1DB954] focus:ring-opacity-50 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
                 {/* Vibe Selection */}
                 <div className="bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl backdrop-blur-md shadow-xl">
                   <h3 className="text-sm font-semibold text-white tracking-wide flex items-center gap-1.5 mb-3">
                     <Music className="w-4 h-4 text-[#1DB954]" />
-                    Aesthetic Vibe Criteria
+                    <span className={spotifyRankingOnly ? "text-zinc-500" : "text-white"}>
+                      Aesthetic Vibe Criteria
+                    </span>
                   </h3>
-                  <div className="space-y-2">
+                  <div className={`space-y-2 transition-all duration-200 ${spotifyRankingOnly ? "opacity-30 pointer-events-none select-none" : ""}`}>
                     {PRESET_VIBES.map((v) => (
                       <button
                         key={v.id}
+                        disabled={spotifyRankingOnly}
                         onClick={() => setSelectedVibe(v.id)}
                         className={`w-full p-3 rounded-xl border text-left transition-all cursor-pointer ${
                           selectedVibe === v.id
@@ -900,22 +934,25 @@ export default function App() {
                 </div>
 
                 {/* Prompt Fine-tuning */}
-                <div className="bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl backdrop-blur-md shadow-xl">
-                  <h3 className="text-sm font-semibold text-white tracking-wide flex items-center gap-1.5 mb-2">
-                    <SlidersHorizontal className="w-4 h-4 text-[#1DB954]" />
-                    Custom Directives
-                  </h3>
-                  <p className="text-[10px] text-zinc-400 leading-relaxed mb-3">
-                    Add custom instructions (e.g., "Exclude heavy rock", "Include acoustic versions", "Filter for late 1990s tracks").
-                  </p>
-                  <textarea
-                    rows={3}
-                    value={customInstructions}
-                    onChange={(e) => setCustomInstructions(e.target.value)}
-                    placeholder="Enter style parameters or boundaries..."
-                    className="w-full bg-zinc-950/80 border border-zinc-800 hover:border-zinc-700 focus:border-[#1DB954] text-xs text-white rounded-xl p-3 outline-none transition-all placeholder:text-zinc-700 resize-none font-sans"
-                  />
-                </div>
+                {selectedVibe === "default" && (
+                  <div className={`bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl backdrop-blur-md shadow-xl transition-all duration-300 ${spotifyRankingOnly ? "opacity-30 pointer-events-none select-none" : ""}`}>
+                    <h3 className="text-sm font-semibold text-white tracking-wide flex items-center gap-1.5 mb-2">
+                      <SlidersHorizontal className="w-4 h-4 text-[#1DB954]" />
+                      Custom Directives
+                    </h3>
+                    <p className="text-[10px] text-zinc-400 leading-relaxed mb-3">
+                      Add custom instructions (e.g., "Exclude heavy rock", "Include acoustic versions", "Filter for late 1990s tracks").
+                    </p>
+                    <textarea
+                      rows={3}
+                      disabled={spotifyRankingOnly}
+                      value={customInstructions}
+                      onChange={(e) => setCustomInstructions(e.target.value)}
+                      placeholder="Enter style parameters or boundaries..."
+                      className="w-full bg-zinc-950/80 border border-zinc-800 hover:border-zinc-700 focus:border-[#1DB954] text-xs text-white rounded-xl p-3 outline-none transition-all placeholder:text-zinc-700 resize-none font-sans disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                )}
 
                 {/* Generate Launcher Trigger */}
                 <div className="bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl backdrop-blur-md shadow-xl text-center">
@@ -927,17 +964,21 @@ export default function App() {
                   )}
 
                   <button
-                    disabled={selectedArtists.length < 2 || loading}
+                    disabled={selectedArtists.length < 1 || loading}
                     onClick={handleGeneratePlaylist}
                     className="w-full bg-[#1DB954] hover:bg-[#1ed760] active:scale-[0.98] disabled:bg-zinc-800 disabled:text-zinc-500 disabled:border-transparent disabled:scale-100 disabled:cursor-not-allowed text-black font-bold text-sm py-4 rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-[#1DB954]/10 cursor-pointer"
                   >
                     <Sparkles className="w-4.5 h-4.5 text-black animate-pulse" />
-                    Generate AI Playlist
+                    {spotifyRankingOnly ? "Generate Playlist" : "Generate AI Playlist"}
                   </button>
 
                   <div className="mt-3 flex items-center justify-center gap-1 text-[10px] text-zinc-500 font-mono">
-                    <span>Vibe: {getVibeName(selectedVibe)}</span>
-                    <span>•</span>
+                    {!spotifyRankingOnly && (
+                      <>
+                        <span>Vibe: {getVibeName(selectedVibe)}</span>
+                        <span>•</span>
+                      </>
+                    )}
                     <span>Selected: {selectedArtists.length}</span>
                   </div>
                 </div>
@@ -1013,7 +1054,7 @@ export default function App() {
                 <div className="flex-1 space-y-3.5 text-center md:text-left">
                   <div>
                     <span className="text-[10px] bg-emerald-950/50 text-[#1DB954] border border-emerald-900 font-mono px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
-                      AI Generated Custom Blend
+                      {spotifyRankingOnly ? "Direct Spotify Top Selection" : "AI Generated Custom Blend"}
                     </span>
                     <h2 className="text-2xl md:text-4xl font-extrabold text-white mt-1.5 tracking-tight leading-tight">
                       {playlist.playlistTitle}
@@ -1032,7 +1073,10 @@ export default function App() {
                       Duration: <strong className="text-white">{formatSeconds(totalDurationSeconds)}</strong>
                     </span>
                     <span className="text-[11px] bg-zinc-950/60 border border-zinc-800/80 px-2.5 py-1 rounded-full text-zinc-400 font-medium font-mono">
-                      Vibe preference: <strong className="text-zinc-200">{getVibeName(selectedVibe)}</strong>
+                      {spotifyRankingOnly ? "Mode: " : "Vibe preference: "}
+                      <strong className="text-zinc-200">
+                        {spotifyRankingOnly ? "Direct Spotify Selection" : getVibeName(selectedVibe)}
+                      </strong>
                     </span>
                   </div>
                 </div>
@@ -1137,35 +1181,29 @@ export default function App() {
                                 </div>
 
                                 {/* Fact block integration */}
-                                <div className="mt-3 md:mt-0 px-2 flex-1 md:max-w-md lg:max-w-xs text-left bg-zinc-950 border border-zinc-900 rounded-lg py-1.5 pr-2 pl-3 relative shadow-inner md:mx-4 flex items-start gap-1.5">
-                                  <Info className="w-3.5 h-3.5 text-[#1DB954] flex-shrink-0 mt-0.5 hover:scale-105 transition-transform" />
-                                  <span className="text-[10px] text-zinc-400 italic block leading-relaxed line-clamp-2 md:line-clamp-3">
-                                    {track.fact}
-                                  </span>
-                                </div>
+                                {track.fact ? (
+                                  <div className="mt-3 md:mt-0 px-2 flex-1 md:max-w-md lg:max-w-xs text-left bg-zinc-950 border border-zinc-900 rounded-lg py-1.5 pr-2 pl-3 relative shadow-inner md:mx-4 flex items-start gap-1.5">
+                                    <Info className="w-3.5 h-3.5 text-[#1DB954] flex-shrink-0 mt-0.5 hover:scale-105 transition-transform" />
+                                    <span className="text-[10px] text-zinc-400 italic block leading-relaxed line-clamp-2 md:line-clamp-3">
+                                      {track.fact}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="flex-1 md:max-w-md lg:max-w-xs md:mx-4" />
+                                )}
 
                                 {/* Metadata metrics (duration and popularity metric) & positioning controls */}
                                 <div className="mt-4 md:mt-0 flex items-center justify-between md:justify-end gap-3 flex-shrink-0">
                                   <div className="text-right flex flex-col justify-center items-end">
                                     <span className="text-[10.5px] text-zinc-500 font-mono">{track.duration}</span>
                                     {/* Small design score line */}
-                                    <div className="flex items-center gap-1 mt-1">
-                                      {track.rankingOrdinal !== undefined ? (
+                                    {track.rankingOrdinal !== undefined && (
+                                      <div className="flex items-center gap-1 mt-1">
                                         <span className="text-[10px] font-bold font-mono text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-2 py-0.5 rounded-md">
                                           Rank #{track.rankingOrdinal}
                                         </span>
-                                      ) : (
-                                        <>
-                                          <span className="text-[9px] text-zinc-600 font-mono">Popularity:</span>
-                                          <div className="w-12 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-                                            <div
-                                              style={{ width: `${track.popularity}%` }}
-                                              className="h-full bg-gradient-to-r from-emerald-500 to-green-400 rounded-full"
-                                            />
-                                          </div>
-                                        </>
-                                      )}
-                                    </div>
+                                      </div>
+                                    )}
                                   </div>
 
                                   {/* Direct external search linker if they want context */}
@@ -1409,21 +1447,11 @@ export default function App() {
                         <span>Total Tracklist Count:</span>
                         <span className="text-zinc-200">{reorderedTracks.length}</span>
                       </li>
-                      {reorderedTracks.some(t => t.rankingOrdinal !== undefined) ? (
+                      {reorderedTracks.some(t => t.rankingOrdinal !== undefined) && (
                         <li className="flex justify-between">
                           <span>Average Curated Rank:</span>
                           <span className="text-[#1DB954] font-bold font-mono">
                             #{(reorderedTracks.reduce((acc, t) => acc + (t.rankingOrdinal || 0), 0) / (reorderedTracks.length || 1)).toFixed(1)}
-                          </span>
-                        </li>
-                      ) : (
-                        <li className="flex justify-between">
-                          <span>Average Song Stream Rating:</span>
-                          <span className="text-[#1DB954] font-bold font-mono">
-                            {Math.round(
-                              reorderedTracks.reduce((acc, t) => acc + t.popularity, 0) / (reorderedTracks.length || 1)
-                            )}
-                            %
                           </span>
                         </li>
                       )}

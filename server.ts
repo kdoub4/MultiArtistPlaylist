@@ -45,6 +45,19 @@ function getRedirectUri(req: express.Request, port: number): string {
   return `${hostUrl}/api/spotify/callback`;
 }
 
+function shuffleArray<T>(array: T[]): T[] {
+  const arr = [...array];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function encodeSpotifySearch(query: string): string {
+  return encodeURIComponent(query).replace(/'/g, "%27");
+}
+
 const LOCAL_CATALOG: Record<string, any[]> = {
   "the beatles": [
     { title: "Here Comes The Sun", album: "Abbey Road", releaseYear: "1969", duration: "3:06", durationSeconds: 186, popularity: 88, id: "6789i", uri: "spotify:track:66DF69b9148d48", href: "https://open.spotify.com/track/66DF69b9148d48", previewUrl: null, albumCover: "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300" },
@@ -171,7 +184,7 @@ const LOCAL_CATALOG: Record<string, any[]> = {
 function generateProgrammaticFact(artistName: string, trackName: string, albumName: string, releaseYear: string, popularity: number): string {
   const templates = [
     `An outstanding hit by ${artistName} from the acclaimed album '${albumName}' (${releaseYear}).`,
-    `This brilliant track by ${artistName} has a global listener popularity score of ${popularity}/100.`,
+    `This brilliant track by ${artistName} is one of the most celebrated highlights from the album '${albumName}'.`,
     `A signature masterpiece by ${artistName} that remains a fan-favorite since debuting in ${releaseYear}.`,
     `Features some of the most memorable hooks and artistic production of ${artistName}'s discography.`,
     `Representing the peak creative era of ${artistName}, from the landmark release '${albumName}'.`
@@ -193,7 +206,7 @@ function generateProgrammaticPlaylistMetadata(artists: string[], vibe: string): 
     classic: "Iconic & Rare"
   };
   const vibeAdjectives: Record<string, string> = {
-    default: "unfiltered metrics and raw popular acclaim",
+    default: "unfiltered tracks and raw musical acclaim",
     chill: "soft tempos, gentle acoustic elements, and relaxed grooves",
     energy: "heavy rhythms, high beats per minute, and intense focus-driving masterworks",
     moody: "deeply atmospheric, late-night emotional hooks, and cozy resonance",
@@ -211,9 +224,89 @@ function generateProgrammaticPlaylistMetadata(artists: string[], vibe: string): 
     title = `${artists.slice(0, 2).join(" & ")} & Friends: ${prefix} Mix`;
   }
 
-  const description = `A masterfully compiled compilation of ${artists.join(", ")}, specifically tuned to highlight ${adject}. Programmatically selected using direct Spotify popularity and release indexes on a real-time blend matrix. Action elements are fully synced and ready to play.`;
+  const description = `A masterfully compiled compilation of ${artists.join(", ")}, specifically tuned to highlight ${adject}. Programmatically selected using direct Spotify catalogs and release indexes on a real-time blend matrix. Action elements are fully synced and ready to play.`;
 
   return { playlistTitle: title, playlistDescription: description };
+}
+
+interface FetchFallbackResult {
+  ok: boolean;
+  status: number;
+  data: any;
+  source: "global" | "user" | null;
+  errorBody?: string;
+}
+
+async function spotifyFetchWithFallback(
+  url: string,
+  appToken: string | null,
+  userAccessToken: string | null = null,
+  addLog?: (level: "info" | "warn" | "error" | "success", message: string) => void,
+  checkEmptyItems: boolean = false
+): Promise<FetchFallbackResult> {
+  const log = addLog || ((level: string, message: string) => console.log(`[SPOTIFY_FALLBACK] [${level.toUpperCase()}] ${message}`));
+  
+  const tokensToTry: Array<{ token: string; type: "global" | "user" }> = [];
+  if (appToken) {
+    tokensToTry.push({ token: appToken, type: "global" });
+  }
+  if (userAccessToken) {
+    tokensToTry.push({ token: userAccessToken, type: "user" });
+  }
+
+  if (tokensToTry.length === 0) {
+    return { ok: false, status: 401, data: null, source: null, errorBody: "No Spotify access tokens available (neither app-wide nor user session)." };
+  }
+
+  let finalStatus = 200;
+  let finalError = "";
+  
+  for (const { token, type } of tokensToTry) {
+    const label = type === "global" ? "Global Session (MA Client ID)" : "User Developer Session";
+    log("info", `Executing Spotify Web API request [${label}] to: ${url}`);
+    
+    try {
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Accept": "application/json"
+        }
+      });
+      
+      finalStatus = res.status;
+      const resText = await res.text();
+      
+      if (res.ok) {
+        let resData: any = null;
+        try {
+          resData = JSON.parse(resText);
+        } catch (e) {
+          log("warn", `Spotify response was OK but could not be parsed as JSON. Content preview: ${resText.slice(0, 200)}`);
+          continue;
+        }
+        
+        if (checkEmptyItems && url.includes("/v1/search")) {
+          const itemsCount = resData.tracks?.items?.length || resData.artists?.items?.length || 0;
+          if (itemsCount === 0) {
+            log("warn", `Spotify [${label}] returned empty search items list. Proceeding to fallback token...`);
+            finalError = "Empty search results";
+            continue;
+          }
+        }
+        
+        log("success", `Spotify [${label}] call succeeded! URL: ${url}`);
+        return { ok: true, status: res.status, data: resData, source: type };
+      } else {
+        log("error", `Spotify Web API call failed [${label}] - Status ${res.status}. Error body: ${resText}`);
+        finalError = resText;
+      }
+    } catch (err: any) {
+      log("error", `Exception during Spotify Web API fetch [${label}] to ${url}: ${err.message}`);
+      finalError = err.message;
+    }
+  }
+  
+  return { ok: false, status: finalStatus, data: null, source: null, errorBody: finalError };
 }
 
 async function startServer() {
@@ -233,7 +326,7 @@ async function startServer() {
 
   // API Route - Generate Playlist (hybrid curation engine using Spotify metadata + Gemini AI)
   app.post("/api/generate-playlist", async (req: express.Request, res: express.Response) => {
-    const { artists, vibePreference } = req.body;
+    const { artists, vibePreference, vibeId, spotifyRankingOnly, userAccessToken } = req.body;
     const songsPerArtist = Math.max(1, Math.min(10, parseInt(req.body.songsPerArtist) || 4));
     const logs: Array<{ timestamp: string; level: string; message: string }> = [];
 
@@ -247,18 +340,20 @@ async function startServer() {
       console.log(`[GEN_CANDIDATE] [${level.toUpperCase()}] ${message}`);
     };
 
-    if (!Array.isArray(artists) || artists.length < 2 || artists.length > 10) {
+    if (!Array.isArray(artists) || artists.length < 1 || artists.length > 10) {
       addLog("error", "Received invalid artist selection parameters.");
-      return res.status(400).json({ error: "Please select between 2 and 10 artists." });
+      return res.status(400).json({ error: "Please select between 1 and 10 artists." });
     }
 
     addLog("info", `Initiated custom blend compilation request for selected artists: ${artists.join(", ")}`);
     addLog("info", `Desired songs per artist: ${songsPerArtist}`);
     addLog("info", `User aesthetic mood directives: "${vibePreference || 'none'}"`);
 
-    // Verify Gemini API Key availability
+    const isSpotifyRanking = !!spotifyRankingOnly;
+
+    // Verify Gemini API Key availability (unless pure Spotify Ranking is checked)
     const geminiKey = process.env.GEMINI_API_KEY;
-    if (!geminiKey) {
+    if (!isSpotifyRanking && !geminiKey) {
       addLog("error", "GEMINI_API_KEY is not defined in the environment. Please configure it in Settings.");
       return res.status(400).json({
         error: "Gemini API key is not configured. Please add GEMINI_API_KEY to AI Studio Settings > Secrets to enable curation.",
@@ -341,29 +436,32 @@ async function startServer() {
           let genres = ["Universal Curation"];
 
           // Resolve Artist Profile
-          const searchQuery = `artist:${encodeURIComponent(artistName)}`;
-          const searchUrl = `https://api.spotify.com/v1/search?q=${searchQuery}&type=artist&limit=1`;
-          const sRes = await fetch(searchUrl, {
-            headers: { Authorization: `Bearer ${appToken}` }
-          });
-
-          let searchData: any = null;
-          if (sRes.ok) {
-            searchData = await sRes.json();
+          const searchQuery = `artist:"${artistName}"`;
+          const searchQueryEncoded = encodeSpotifySearch(searchQuery);
+          const searchUrl = `https://api.spotify.com/v1/search?q=${searchQueryEncoded}&type=artist&limit=5`;
+          addLog("info", `Requesting Spotify Artist profile search URL: ${searchUrl}`);
+          
+          let artistItem: any = null;
+          const searchRes = await spotifyFetchWithFallback(searchUrl, appToken, userAccessToken, addLog, true);
+          if (searchRes.ok && searchRes.data?.artists?.items) {
+            const items = searchRes.data.artists.items;
+            // First look for exact match (case-insensitive) in the returned items
+            artistItem = items.find(
+              (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
+            ) || items[0];
           }
-
-          let artistItem = searchData?.artists?.items?.[0];
 
           if (!artistItem) {
             // Retry with open filter if strict query fails
-            const searchUrlFallback = `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist&limit=1`;
-            addLog("warn", `Profile strictly matched empty for "${artistName}". Attempting open query fallback...`);
-            const sResFallback = await fetch(searchUrlFallback, {
-              headers: { Authorization: `Bearer ${appToken}` }
-            });
-            if (sResFallback.ok) {
-              const searchDataFallback = await sResFallback.json();
-              artistItem = searchDataFallback?.artists?.items?.[0];
+            const searchUrlFallback = `https://api.spotify.com/v1/search?q=${encodeSpotifySearch(artistName)}&type=artist&limit=5`;
+            addLog("warn", `Profile strictly matched empty for "${artistName}". Attempting open query fallback to URL: ${searchUrlFallback}...`);
+            const searchFallbackRes = await spotifyFetchWithFallback(searchUrlFallback, appToken, userAccessToken, addLog, true);
+            if (searchFallbackRes.ok && searchFallbackRes.data?.artists?.items) {
+              const items = searchFallbackRes.data.artists.items;
+              // First look for exact match (case-insensitive) in the fallback items
+              artistItem = items.find(
+                (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
+              ) || items[0];
             }
           }
 
@@ -379,21 +477,32 @@ async function startServer() {
 
           addLog("success", `Resolved profile: "${actualArtistName}"`);
 
-          // Fetch tracks pool from Spotify Catalog (omitting limit parameter per user choice)
+          // Fetch tracks pool from Spotify Catalog (requesting up to 10 popular tracks)
           const cleanArtistQuery = `artist:"${actualArtistName}"`;
-          const trackSearchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(cleanArtistQuery)}&type=track&market=CA`;
-          addLog("info", `Requesting Spotify Catalog tracks for "${actualArtistName}" (no limit specified)...`);
-
+          const trackSearchUrl = `https://api.spotify.com/v1/search?q=${encodeSpotifySearch(cleanArtistQuery)}&type=track&limit=10&market=CA&use_global_session=True`;
+          
+          const tokenToUse = userAccessToken || appToken;
+          const tokenLabel = userAccessToken ? "user token session" : "global app session (fallback)";
+          
+          addLog("info", `Requesting Spotify Catalog tracks URL utilizing ${tokenLabel}: ${trackSearchUrl}`);
           let rawTracksList: any[] = [];
-          const trRes = await fetch(trackSearchUrl, {
-            headers: { Authorization: `Bearer ${appToken}` }
-          });
-
-          if (trRes.ok) {
-            const trData: any = await trRes.json();
-            rawTracksList = trData.tracks?.items || [];
-          } else {
-            addLog("warn", `Spotify track lookup for "${actualArtistName}" failed with status ${trRes.status}`);
+          try {
+            const trRes = await fetch(trackSearchUrl, {
+              headers: {
+                Authorization: `Bearer ${tokenToUse}`,
+                "Accept": "application/json"
+              }
+            });
+            if (trRes.ok) {
+              const trData: any = await trRes.json();
+              rawTracksList = trData.tracks?.items || [];
+              addLog("success", `Direct track search succeeded and found ${rawTracksList.length} tracks using ${tokenLabel}.`);
+            } else {
+              const errBody = await trRes.text();
+              addLog("error", `Spotify track search failed with status ${trRes.status}. Error: ${errBody}`);
+            }
+          } catch (err: any) {
+            addLog("error", `Exception during Spotify track search: ${err.message}`);
           }
 
           if (rawTracksList.length === 0) {
@@ -433,6 +542,77 @@ async function startServer() {
         });
       }
 
+      // Handle raw Spotify Popularity Ranking Only mode (Bypassing Gemini completely)
+      if (isSpotifyRanking) {
+        addLog("info", "Bypassing Gemini curation since 'Spotify Ranking Only' is active.");
+        addLog("info", "Extracting tracks straight from Spotify Catalog...");
+
+        const firstTwoNames = resolvedArtists.slice(0, 2).map((ra) => ra.actualName).join(" & ");
+        const finalTitle = `${firstTwoNames}${resolvedArtists.length > 2 ? " + More" : ""}`.slice(0, 30);
+        const allNames = resolvedArtists.map((ra) => ra.actualName).join(", ");
+        const finalDescription = `Featured track selections for ${allNames}. Real-time metadata blend, no AI filters.`;
+
+        const spotifySelectedArtistsData: any[] = [];
+
+        for (const resolvedArt of resolvedArtists) {
+          addLog("info", `Gathering first 10 tracks returned from Spotify for "${resolvedArt.actualName}"...`);
+          const rawPool = resolvedArt.rawTracks.slice(0, 10);
+          
+          // Map tracks to pair them with their original 1-based Spotify ranking index
+          const tracksWithOriginalRank = rawPool.map((rt: any, idx: number) => ({
+            rt,
+            originalRank: idx + 1
+          }));
+
+          addLog("info", `Randomly selecting ${songsPerArtist} track(s) from the pool of ${rawPool.length} tracks...`);
+          const shuffledPool = shuffleArray(tracksWithOriginalRank);
+          const selectedTracks = shuffledPool.slice(0, songsPerArtist);
+
+          const mappedSongsList = selectedTracks.map(({ rt, originalRank }) => {
+            let durationStr = "3:45";
+            let durationSec = 225;
+            if (rt.duration_ms) {
+              durationSec = Math.floor(rt.duration_ms / 1000);
+              const mins = Math.floor(durationSec / 60);
+              const secs = durationSec % 60;
+              durationStr = `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+            }
+
+            return {
+              title: rt.name,
+              album: rt.album?.name || "Single",
+              releaseYear: (rt.album?.release_date || "").split("-")[0] || "2020",
+              duration: durationStr,
+              durationSeconds: durationSec,
+              spotifySearchQuery: `${resolvedArt.actualName} - ${rt.name}`,
+              popularity: rt.popularity || 50,
+              rankingOrdinal: originalRank,
+              id: rt.id,
+              uri: rt.uri,
+              href: rt.external_urls?.spotify || `https://open.spotify.com/search/${encodeURIComponent(resolvedArt.actualName + " - " + rt.name)}`,
+              previewUrl: rt.preview_url,
+              albumCover: (rt.album?.images?.[0]?.url || rt.album?.images?.[1]?.url || ""),
+              fact: "" // No song blurb/fact for a spotify only playlist
+            };
+          });
+
+          spotifySelectedArtistsData.push({
+            name: resolvedArt.actualName,
+            genres: resolvedArt.genres,
+            avatarPlaceholderColor: resolvedArt.avatarPlaceholderColor,
+            songs: mappedSongsList
+          });
+        }
+
+        addLog("success", "Spotify direct track selection complete! Returning compiled blend...");
+        return res.json({
+          playlistTitle: finalTitle,
+          playlistDescription: finalDescription,
+          artists: spotifySelectedArtistsData,
+          logs
+        });
+      }
+
       // Step 3: Initialize GoogleGenAI client & query Gemini for the curated blend
       addLog("info", "Initializing Gemini curation model...");
       const ai = new GoogleGenAI({
@@ -450,6 +630,8 @@ async function startServer() {
         return `Artist Name: "${ra.actualName}"\nResolved Tracks Pool:\n${trackSummaries}`;
       }).join("\n\n");
 
+      const targetSongsCount = vibeId === "default" ? 15 : songsPerArtist;
+
       const geminiPrompt = `
 You are an expert, highly knowledgeable music curator with deep, detailed trivia knowledge of bands, singers, albums, and songs.
 We are building a highly cohesive, professional collaborative blend playlist for the following artists: ${resolvedArtists.map((ra) => ra.actualName).join(", ")}.
@@ -463,11 +645,11 @@ Your curating tasks are:
    - Create a beautiful, creative playlist name. Important rule: MAXIMUM 30 characters.
    - Write a cohesive, compelling, and descriptive summary/bio for this playlist (MAXIMUM 300 characters). Highlight how these artists fuse under the requested vibe criteria.
 2. Curation list per artist:
-   - For each artist, curate EXACTLY 15 of their most iconic, popular, and essential tracks.
-   - Order them from #1 (most iconic/popular/essential under this specific vibe) down to #15.
+   - For each artist, curate EXACTLY ${targetSongsCount} of their most iconic, popular, and essential tracks.
+   - Order them from #1 (most iconic/popular/essential under this specific vibe) down to #${targetSongsCount}.
    - Prefer newer songs slightly if they fit the requested vibe elegantly, but maintain the overall prestige level of the track.
    - Try to favor track titles from the provided Spotify search pool context above to maximize matching, but feel free to suggest other iconic masterpieces if they are genuinely the artist's legendary songs.
-   - For each song, assign rankingOrdinal (integer from 1 to 15 inside the artist's list).
+   - For each song, assign rankingOrdinal (integer from 1 to ${targetSongsCount} inside the artist's list).
    - Write a highly fascinating, fun, true, and educational fact or trivia about each track under 100 characters (e.g., songwriting secrets, chart awards, production notes, or culture loops). Do NOT use generic text like "Classic track by..." or "Released in YYYY".
 
 Return a single JSON object strictly matching this schema:
@@ -573,11 +755,17 @@ Return a single JSON object strictly matching this schema:
           continue;
         }
 
-        addLog("info", `Curation generated 15 songs for "${resolvedArt.actualName}". Selecting ${songsPerArtist} at random in code...`);
+        const isDefaultVibe = vibeId === "default";
+        let slicedSongsCandidates: any[] = [];
 
-        // Capture a randomized subset from the 15 songs returned by Gemini
-        const randomizedCurationSongs = [...geminiArtData.songs].sort(() => 0.5 - Math.random());
-        const slicedSongsCandidates = randomizedCurationSongs.slice(0, Math.min(songsPerArtist, randomizedCurationSongs.length));
+        if (isDefaultVibe) {
+          addLog("info", `Curation generated 15 songs for "${resolvedArt.actualName}" (default vibe). Selecting ${songsPerArtist} at random in code...`);
+          const randomizedCurationSongs = shuffleArray(geminiArtData.songs);
+          slicedSongsCandidates = randomizedCurationSongs.slice(0, Math.min(songsPerArtist, randomizedCurationSongs.length));
+        } else {
+          addLog("info", `Curation generated ${geminiArtData.songs.length} songs for "${resolvedArt.actualName}" (premium vibe "${vibeId}"). Putting all curated songs directly into the playlist.`);
+          slicedSongsCandidates = geminiArtData.songs;
+        }
 
         const mappedSongsList = slicedSongsCandidates.map((gemSong: any) => {
           // Attempt to match song title against Spotify tracks list
@@ -749,7 +937,7 @@ Return a single JSON object strictly matching this schema:
       const enrichmentResult = await Promise.all(
         queries.map(async (query: string) => {
           try {
-            const searchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=1`;
+            const searchUrl = `https://api.spotify.com/v1/search?q=${encodeSpotifySearch(query)}&type=track&limit=1`;
             const searchRes = await fetch(searchUrl, {
               headers: { Authorization: `Bearer ${appToken}` },
             });
@@ -980,6 +1168,7 @@ Return a single JSON object strictly matching this schema:
 
       // 2. Resolve Track URIs
       const trackUris: string[] = [];
+      const appToken = await getSpotifyAppToken();
 
       if (Array.isArray(tracks)) {
         for (const track of tracks) {
@@ -989,15 +1178,30 @@ Return a single JSON object strictly matching this schema:
             // Search dynamically if uri is missing
             const query = track.query || `${track.artist} - ${track.title}`;
             try {
-              const sRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=1`, {
-                headers: { Authorization: `Bearer ${userAccessToken}` },
-              });
-              if (sRes.ok) {
-                const sData: any = await sRes.json();
-                const foundTrack = sData.tracks?.items?.[0];
-                if (foundTrack) {
-                  trackUris.push(foundTrack.uri);
+              // Try global session (MA's Client ID) first as requested, fallback to user's access token
+              const searchTokens: string[] = [];
+              if (appToken) {
+                searchTokens.push(appToken);
+              }
+              searchTokens.push(userAccessToken);
+
+              let found = false;
+              for (const token of searchTokens) {
+                const sRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeSpotifySearch(query)}&type=track&limit=1`, {
+                  headers: { Authorization: `Bearer ${token}` },
+                });
+                if (sRes.ok) {
+                  const sData: any = await sRes.json();
+                  const foundTrack = sData.tracks?.items?.[0];
+                  if (foundTrack) {
+                    trackUris.push(foundTrack.uri);
+                    found = true;
+                    break;
+                  }
                 }
+              }
+              if (!found) {
+                console.warn(`Could not resolve track query: "${query}" using either token.`);
               }
             } catch (searchErr) {
               console.error(`Error searching track query "${query}":`, searchErr);
@@ -1007,15 +1211,30 @@ Return a single JSON object strictly matching this schema:
       } else if (Array.isArray(trackQueries)) {
         for (const trackQuery of trackQueries) {
           try {
-            const sRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(trackQuery)}&type=track&limit=1`, {
-              headers: { Authorization: `Bearer ${userAccessToken}` },
-            });
-            if (sRes.ok) {
-              const sData: any = await sRes.json();
-              const foundTrack = sData.tracks?.items?.[0];
-              if (foundTrack) {
-                trackUris.push(foundTrack.uri);
+            // Try global session (MA's Client ID) first as requested, fallback to user's access token
+            const searchTokens: string[] = [];
+            if (appToken) {
+              searchTokens.push(appToken);
+            }
+            searchTokens.push(userAccessToken);
+
+            let found = false;
+            for (const token of searchTokens) {
+              const sRes = await fetch(`https://api.spotify.com/v1/search?q=${encodeSpotifySearch(trackQuery)}&type=track&limit=1`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              if (sRes.ok) {
+                const sData: any = await sRes.json();
+                const foundTrack = sData.tracks?.items?.[0];
+                if (foundTrack) {
+                  trackUris.push(foundTrack.uri);
+                  found = true;
+                  break;
+                }
               }
+            }
+            if (!found) {
+              console.warn(`Could not resolve track query: "${trackQuery}" using either token.`);
             }
           } catch (searchErr) {
             console.error(`Error searching track query "${trackQuery}":`, searchErr);
