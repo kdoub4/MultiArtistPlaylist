@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 
@@ -312,11 +311,10 @@ async function spotifyFetchWithFallback(
 const app = express();
 const PORT = 3000;
 
-async function startServer() {
-  app.use(express.json());
+app.use(express.json());
 
-  // API Route - Get Config
-  app.get("/api/spotify/config", (req, res) => {
+// API Route - Get Config
+app.get("/api/spotify/config", (req, res) => {
     res.json({
       configured: !!(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET),
       clientId: process.env.SPOTIFY_CLIENT_ID || "",
@@ -1339,8 +1337,10 @@ Return a single JSON object strictly matching this schema:
     }
   });
 
-  // Vite middleware for development
+  // Vite middleware and listener setup helper
+async function startViteAndListen() {
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1361,6 +1361,6 @@ Return a single JSON object strictly matching this schema:
   }
 }
 
-startServer();
+startViteAndListen();
 
 export { app };
