@@ -812,32 +812,42 @@ Return a single JSON object strictly matching this schema:
         isServerNotFound = true;
       }
 
+      let useClientCuration = isServerNotFound;
+      let serverErrorMsg = "";
+
+      if (!useClientCuration && response) {
+        if (!response.ok) {
+          useClientCuration = true;
+          try {
+            const responseText = await response.text();
+            try {
+              const errData = JSON.parse(responseText);
+              serverErrorMsg = errData.error || `Server status ${response.status}`;
+            } catch (_) {
+              serverErrorMsg = `Server status ${response.status}`;
+            }
+          } catch (_) {}
+        }
+      }
+
       let generatedData: PlaylistData;
 
-      if (isServerNotFound) {
-        // Run Client-Side direct Spotify Curation fallback
+      if (useClientCuration) {
+        console.warn(`Server generation unavailable or failed: ${serverErrorMsg}. Performing direct browser-based catalog curation...`);
         generatedData = await handleClientSideGeneratePlaylist();
       } else {
         // Normal server-side route
         if (!response) throw new Error("Could not contact the generation endpoint.");
 
         let data: any = {};
-        const responseText = await response.text();
         try {
-          data = JSON.parse(responseText);
+          data = await response.json();
         } catch (parseErr) {
-          if (!response.ok) {
-            throw new Error(`Failed to generate playlist metadata. Server returned status ${response.status}.`);
-          }
           throw new Error("Invalid response format received from server.");
         }
         
         if (data.logs) {
           setExecutionLogs(data.logs);
-        }
-
-        if (!response.ok) {
-          throw new Error(data.error || "Failed to generate playlist metadata.");
         }
 
         generatedData = data;
@@ -1055,7 +1065,7 @@ Return a single JSON object strictly matching this schema:
                 </button>
               </div>
             ) : (
-              spotifyConfigured.configured ? (
+              (spotifyConfigured.configured || spotifyConfigured.clientId) ? (
                 <button
                   onClick={handleSpotifyLogin}
                   className="bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold text-xs px-4 py-2 rounded-full transition-all duration-200 flex items-center gap-2 shadow-sm cursor-pointer"
