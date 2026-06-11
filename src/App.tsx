@@ -134,8 +134,13 @@ export default function App() {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const origin = event.origin;
-      // Allow from current preview app domain or local hosts
-      if (!origin.endsWith(".run.app") && !origin.includes("localhost")) {
+      // Allow from same origin, current preview app domain, Vercel domains, or local hosts
+      if (
+        origin !== window.location.origin &&
+        !origin.endsWith(".run.app") &&
+        !origin.includes("localhost") &&
+        !origin.endsWith(".vercel.app")
+      ) {
         return;
       }
       if (event.data?.type === "OAUTH_AUTH_SUCCESS") {
