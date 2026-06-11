@@ -434,32 +434,46 @@ app.get("/api/spotify/config", (req, res) => {
           let genres = ["Universal Curation"];
 
           // Resolve Artist Profile
-          const searchQuery = `artist:"${artistName}"`;
-          const searchQueryEncoded = encodeSpotifySearch(searchQuery);
-          const searchUrl = `https://api.spotify.com/v1/search?q=${searchQueryEncoded}&type=artist&limit=5`;
-          addLog("info", `Requesting Spotify Artist profile search URL: ${searchUrl}`);
-          
           let artistItem: any = null;
-          const searchRes = await spotifyFetchWithFallback(searchUrl, appToken, userAccessToken, addLog, true);
-          if (searchRes.ok && searchRes.data?.artists?.items) {
-            const items = searchRes.data.artists.items;
-            // First look for exact match (case-insensitive) in the returned items
-            artistItem = items.find(
-              (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
-            ) || items[0];
+          const isSpotifyId = artistName.startsWith("spotify:artist:") || /^[a-zA-Z0-9]{22}$/.test(artistName);
+
+          if (isSpotifyId) {
+            const id = artistName.startsWith("spotify:artist:") ? artistName.split(":")[2] : artistName;
+            const getUrl = `https://api.spotify.com/v1/artists/${id}`;
+            addLog("info", `Requesting Spotify Artist profile directly by ID: ${id}`);
+            const getRes = await spotifyFetchWithFallback(getUrl, appToken, userAccessToken, addLog, false);
+            if (getRes.ok && getRes.data) {
+              artistItem = getRes.data;
+            }
           }
 
           if (!artistItem) {
-            // Retry with open filter if strict query fails
-            const searchUrlFallback = `https://api.spotify.com/v1/search?q=${encodeSpotifySearch(artistName)}&type=artist&limit=5`;
-            addLog("warn", `Profile strictly matched empty for "${artistName}". Attempting open query fallback to URL: ${searchUrlFallback}...`);
-            const searchFallbackRes = await spotifyFetchWithFallback(searchUrlFallback, appToken, userAccessToken, addLog, true);
-            if (searchFallbackRes.ok && searchFallbackRes.data?.artists?.items) {
-              const items = searchFallbackRes.data.artists.items;
-              // First look for exact match (case-insensitive) in the fallback items
+            const searchQuery = `artist:"${artistName}"`;
+            const searchQueryEncoded = encodeSpotifySearch(searchQuery);
+            const searchUrl = `https://api.spotify.com/v1/search?q=${searchQueryEncoded}&type=artist&limit=5`;
+            addLog("info", `Requesting Spotify Artist profile search URL: ${searchUrl}`);
+            
+            const searchRes = await spotifyFetchWithFallback(searchUrl, appToken, userAccessToken, addLog, true);
+            if (searchRes.ok && searchRes.data?.artists?.items) {
+              const items = searchRes.data.artists.items;
+              // First look for exact match (case-insensitive) in the returned items
               artistItem = items.find(
                 (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
               ) || items[0];
+            }
+
+            if (!artistItem) {
+              // Retry with open filter if strict query fails
+              const searchUrlFallback = `https://api.spotify.com/v1/search?q=${encodeSpotifySearch(artistName)}&type=artist&limit=5`;
+              addLog("warn", `Profile strictly matched empty for "${artistName}". Attempting open query fallback to URL: ${searchUrlFallback}...`);
+              const searchFallbackRes = await spotifyFetchWithFallback(searchUrlFallback, appToken, userAccessToken, addLog, true);
+              if (searchFallbackRes.ok && searchFallbackRes.data?.artists?.items) {
+                const items = searchFallbackRes.data.artists.items;
+                // First look for exact match (case-insensitive) in the fallback items
+                artistItem = items.find(
+                  (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
+                ) || items[0];
+              }
             }
           }
 
@@ -964,6 +978,54 @@ Return a single JSON object strictly matching this schema:
     } catch (err: any) {
       console.error("Spotify Enrichment Error:", err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API Route - Search artists from Spotify API
+  app.get("/api/spotify/search-artists", async (req, res) => {
+    const q = req.query.q;
+    if (!q || typeof q !== "string") {
+      return res.status(400).json({ error: "Missing query q." });
+    }
+
+    try {
+      const appToken = await getSpotifyAppToken();
+      const authHeader = req.headers.authorization;
+      const userToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+      const token = appToken || userToken;
+
+      if (!token) {
+        return res.json({
+          error: "Not configured",
+          message: "Spotify application credentials are not set on the server, and no active user login is present. Showing static presets only.",
+          items: []
+        });
+      }
+
+      const searchQueryEncoded = encodeSpotifySearch(q);
+      const searchUrl = `https://api.spotify.com/v1/search?q=${searchQueryEncoded}&type=artist&limit=6`;
+      
+      const sRes = await fetch(searchUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!sRes.ok) {
+        const fallbackUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(q)}&type=artist&limit=6`;
+        const fallbackRes = await fetch(fallbackUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!fallbackRes.ok) {
+          return res.status(sRes.status).json({ error: `Spotify API responded with status ${sRes.status}` });
+        }
+        const data = await fallbackRes.json();
+        return res.json({ items: data.artists?.items || [] });
+      }
+
+      const data = await sRes.json();
+      return res.json({ items: data.artists?.items || [] });
+    } catch (err: any) {
+      console.error("Error in search-artists:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
     }
   });
 

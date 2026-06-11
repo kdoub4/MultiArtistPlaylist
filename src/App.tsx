@@ -40,7 +40,7 @@ export default function App() {
   const [testingDiagnostics, setTestingDiagnostics] = useState(false);
 
   // Selector state
-  const [selectedArtists, setSelectedArtists] = useState<string[]>([]);
+  const [selectedArtists, setSelectedArtists] = useState<Array<{ name: string; id?: string; imageUrl?: string }>>([]);
   const [songsPerArtist, setSongsPerArtist] = useState<number>(4);
   const [customArtistInput, setCustomArtistInput] = useState("");
   const [selectedVibe, setSelectedVibe] = useState("default");
@@ -48,6 +48,11 @@ export default function App() {
   const [artistSearchQuery, setArtistSearchQuery] = useState("");
   const [isPresetsCollapsed, setIsPresetsCollapsed] = useState(true);
   const [spotifyRankingOnly, setSpotifyRankingOnly] = useState(false);
+
+  // Artist search confirmation states
+  const [searchCandidates, setSearchCandidates] = useState<any[]>([]);
+  const [isSearchingCandidates, setIsSearchingCandidates] = useState(false);
+  const [searchQueryTriggered, setSearchQueryTriggered] = useState("");
 
   const handleSpotifyRankingOnlyChange = (checked: boolean) => {
     setSpotifyRankingOnly(checked);
@@ -231,40 +236,117 @@ export default function App() {
   };
 
   // Add artist logic
-  const handleAddArtist = (artistName: string) => {
-    const pieces = artistName.split(",").map(p => p.trim()).filter(Boolean);
-    if (pieces.length === 0) return;
-
-    let addedCount = 0;
-    let alreadyExistsCount = 0;
+  const handleAddArtist = (artistInput: string | { name: string; id: string; imageUrl?: string }) => {
+    setError(null);
     const currentList = [...selectedArtists];
 
-    for (const piece of pieces) {
-      if (currentList.some((a) => a.toLowerCase() === piece.toLowerCase())) {
-        alreadyExistsCount++;
-        continue;
+    if (typeof artistInput === "object" && artistInput !== null) {
+      const nameToAdd = artistInput.name.trim();
+      const idToAdd = artistInput.id;
+      const imageUrlToAdd = artistInput.imageUrl;
+
+      const isDuplicate = currentList.some((a) => {
+        if (idToAdd && a.id) {
+          return a.id === idToAdd;
+        }
+        return a.name.toLowerCase() === nameToAdd.toLowerCase();
+      });
+
+      if (isDuplicate) {
+        setError(`"${nameToAdd}" is already selected!`);
+        setTimeout(() => setError(null), 3000);
+        return;
       }
+
       if (currentList.length >= 10) {
         setError("Maximum limit of 10 artists reached (max 10 allowed).");
         setTimeout(() => setError(null), 3500);
-        break;
+        return;
       }
-      currentList.push(piece);
-      addedCount++;
-    }
 
-    if (addedCount > 0) {
+      currentList.push({
+        name: nameToAdd,
+        id: idToAdd,
+        imageUrl: imageUrlToAdd
+      });
       setSelectedArtists(currentList);
       setCustomArtistInput("");
-    } else if (alreadyExistsCount > 0) {
-      setError("Specified artist(s) are already selected!");
-      setTimeout(() => setError(null), 3000);
+    } else if (typeof artistInput === "string") {
+      const pieces = artistInput.split(",").map(p => p.trim()).filter(Boolean);
+      if (pieces.length === 0) return;
+
+      let addedCount = 0;
+      let alreadyExistsCount = 0;
+
+      for (const piece of pieces) {
+        if (currentList.some((a) => a.name.toLowerCase() === piece.toLowerCase())) {
+          alreadyExistsCount++;
+          continue;
+        }
+        if (currentList.length >= 10) {
+          setError("Maximum limit of 10 artists reached (max 10 allowed).");
+          setTimeout(() => setError(null), 3500);
+          break;
+        }
+        currentList.push({ name: piece });
+        addedCount++;
+      }
+
+      if (addedCount > 0) {
+        setSelectedArtists(currentList);
+        setCustomArtistInput("");
+      } else if (alreadyExistsCount > 0) {
+        setError("Specified artist(s) are already selected!");
+        setTimeout(() => setError(null), 3000);
+      }
     }
   };
 
   // Remove artist logic
   const handleRemoveArtist = (artistName: string) => {
-    setSelectedArtists(selectedArtists.filter((a) => a !== artistName));
+    setSelectedArtists(selectedArtists.filter((a) => a.name !== artistName));
+  };
+
+  // Artist Search lookup before adding to list for verification step
+  const handleSearchArtist = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const query = customArtistInput.trim();
+    if (!query) return;
+
+    setIsSearchingCandidates(true);
+    setSearchCandidates([]);
+    setSearchQueryTriggered(query);
+    setError(null);
+
+    try {
+      const headersInit: HeadersInit = {};
+      if (accessToken) {
+        headersInit["Authorization"] = `Bearer ${accessToken}`;
+      }
+      const response = await fetch(`/api/spotify/search-artists?q=${encodeURIComponent(query)}`, {
+        headers: headersInit
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.items && data.items.length > 0) {
+          setSearchCandidates(data.items);
+        } else {
+          // No results found from search, add exactly what they typed
+          handleAddArtist(query);
+          setCustomArtistInput("");
+        }
+      } else {
+        // API error or not configured, fall back to adding exactly what they typed
+        handleAddArtist(query);
+        setCustomArtistInput("");
+      }
+    } catch (err) {
+      console.error("Search failed, adding exact string:", err);
+      handleAddArtist(query);
+      setCustomArtistInput("");
+    } finally {
+      setIsSearchingCandidates(false);
+    }
   };
 
   // Format seconds to readable length (e.g. "365" -> "6:05")
@@ -380,7 +462,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          artists: selectedArtists,
+          artists: selectedArtists.map((a) => a.id ? `spotify:artist:${a.id}` : a.name),
           vibePreference: moodInstruction,
           songsPerArtist,
           vibeId: selectedVibe,
@@ -572,7 +654,7 @@ export default function App() {
 
   // Set preset artist quickly action
   const togglePresetArtist = (artistName: string) => {
-    if (selectedArtists.includes(artistName)) {
+    if (selectedArtists.some((a) => a.name.toLowerCase() === artistName.toLowerCase())) {
       handleRemoveArtist(artistName);
     } else {
       handleAddArtist(artistName);
@@ -673,10 +755,7 @@ export default function App() {
                   <div className="mt-6">
                     <label className="block text-xs font-medium text-zinc-300 mb-2">Search or Add Any Music Artist</label>
                     <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleAddArtist(customArtistInput);
-                      }}
+                      onSubmit={handleSearchArtist}
                       className="flex gap-2"
                     >
                       <div className="relative flex-1">
@@ -686,17 +765,137 @@ export default function App() {
                           value={customArtistInput}
                           onChange={(e) => setCustomArtistInput(e.target.value)}
                           placeholder="e.g. Led Zeppelin, Daft Punk, Drake, Lorde..."
-                          className="w-full bg-zinc-950/80 border border-zinc-800 hover:border-zinc-700 focus:border-[#1DB954] text-white rounded-xl py-3 pl-10 pr-4 text-sm outline-none transition-all placeholder:text-zinc-600"
+                          className="w-full bg-zinc-950/80 border border-zinc-805 hover:border-zinc-700 /focus:border-[#1DB954] text-white rounded-xl py-3 pl-10 pr-4 text-sm outline-none transition-all placeholder:text-zinc-650"
                         />
                       </div>
                       <button
                         type="submit"
                         className="bg-[#1DB954] hover:bg-[#1ed760] active:scale-95 text-black px-5 rounded-xl font-bold text-sm transition-all flex items-center gap-1.5 shadow-lg shadow-[#1DB954]/10"
                       >
-                        <Plus className="w-4 h-4 stroke-[3px]" />
-                        Add
+                        <Search className="w-4 h-4 stroke-[3px]" />
+                        Search
                       </button>
                     </form>
+
+                    {/* Artist Search / Selection Candidates Drawer */}
+                    <AnimatePresence>
+                      {(isSearchingCandidates || searchCandidates.length > 0) && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.25 }}
+                          className="mt-4 bg-zinc-950 border border-zinc-800 rounded-xl p-4 overflow-hidden shadow-2xl"
+                        >
+                          <div className="flex items-center justify-between mb-3 pb-2 border-b border-zinc-800/60">
+                            <span className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
+                              <Disc className={`w-4 h-4 text-[#1DB954] ${isSearchingCandidates ? "animate-spin" : ""}`} />
+                              {isSearchingCandidates ? (
+                                <span>Searching Spotify Catalog...</span>
+                              ) : (
+                                <span>Select correct artist for "{searchQueryTriggered}"</span>
+                              )}
+                            </span>
+                            {!isSearchingCandidates && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSearchCandidates([]);
+                                  setSearchQueryTriggered("");
+                                }}
+                                className="text-[10.5px] text-zinc-550 hover:text-zinc-300 font-mono transition-colors"
+                              >
+                                [ Cancel ]
+                              </button>
+                            )}
+                          </div>
+
+                          {isSearchingCandidates ? (
+                            <div className="py-6 flex flex-col items-center justify-center gap-2">
+                              <Loader2 className="w-6 h-6 text-[#1DB954] animate-spin" />
+                              <span className="text-[11px] text-zinc-400 font-mono">Fetching profiles from Spotify API...</span>
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-y-auto pr-1">
+                                {searchCandidates.map((candidate) => {
+                                  const artistImage = candidate.images?.[2]?.url || candidate.images?.[1]?.url || candidate.images?.[0]?.url;
+
+                                  return (
+                                    <div
+                                      key={candidate.id}
+                                      className="flex items-center justify-between p-2.5 rounded-xl border border-zinc-900 bg-zinc-900/30 hover:border-zinc-800 hover:bg-zinc-800/10 transition-all gap-4"
+                                    >
+                                      <div className="flex items-center gap-3 min-w-0">
+                                        {artistImage ? (
+                                          <img
+                                            src={artistImage}
+                                            alt={candidate.name}
+                                            referrerPolicy="no-referrer"
+                                            className="w-10 h-10 rounded-full object-cover border border-zinc-800 flex-shrink-0"
+                                          />
+                                        ) : (
+                                          <div className="w-10 h-10 rounded-full bg-zinc-900 text-zinc-500 flex items-center justify-center font-bold font-mono text-xs flex-shrink-0 border border-zinc-800">
+                                            {candidate.name.charAt(0).toUpperCase()}
+                                          </div>
+                                        )}
+                                        <div className="min-w-0">
+                                          <span className="block text-xs font-bold text-white truncate max-w-[160px]">
+                                            {candidate.name}
+                                          </span>
+                                          <a
+                                            href={candidate.external_urls?.spotify || `https://open.spotify.com/artist/${candidate.id}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center gap-1 mt-1 text-[10px] text-zinc-400 hover:text-[#1DB954] font-medium transition-colors"
+                                          >
+                                            View Spotify Profile
+                                            <ExternalLink className="w-3 h-3" />
+                                          </a>
+                                        </div>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleAddArtist({
+                                            name: candidate.name,
+                                            id: candidate.id,
+                                            imageUrl: artistImage
+                                          });
+                                          setSearchCandidates([]);
+                                          setSearchQueryTriggered("");
+                                          setCustomArtistInput("");
+                                        }}
+                                        className="bg-[#1DB954] hover:bg-[#1ed760] active:scale-95 text-black text-xs font-bold px-3.5 py-1.5 rounded-lg transition-all shadow-sm"
+                                      >
+                                        Select
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              <div className="flex items-center justify-between border-t border-zinc-900/80 pt-3 mt-1 text-[10.5px]">
+                                <span className="text-zinc-500">None of these match?</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleAddArtist(searchQueryTriggered);
+                                    setSearchCandidates([]);
+                                    setSearchQueryTriggered("");
+                                    setCustomArtistInput("");
+                                  }}
+                                  className="text-[#1DB954] hover:text-[#1ed760] font-semibold transition-colors flex items-center gap-1 hover:underline"
+                                >
+                                  Add "{searchQueryTriggered}" exactly anyway
+                                  <Plus className="w-3 h-3 stroke-[2.5px]" />
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
 
                   {/* Songs Per Artist text entry input */}
@@ -744,16 +943,28 @@ export default function App() {
                         <AnimatePresence>
                           {selectedArtists.map((artist) => (
                             <motion.span
-                              key={artist}
+                              key={artist.name}
                               initial={{ scale: 0.8, opacity: 0 }}
                               animate={{ scale: 1, opacity: 1 }}
                               exit={{ scale: 0.8, opacity: 0 }}
-                              className="inline-flex items-center gap-1.5 bg-gradient-to-r from-zinc-800 to-zinc-900 border border-zinc-700/60 pl-3.5 pr-2.5 py-1.5 rounded-full text-xs font-medium text-white shadow-sm"
+                              className="inline-flex items-center gap-1.5 bg-gradient-to-r from-zinc-850 to-zinc-900 border border-zinc-700/60 pl-2.5 pr-2 py-1 rounded-full text-xs font-semibold text-white shadow-md"
                             >
-                              {artist}
+                              {artist.imageUrl ? (
+                                <img
+                                  src={artist.imageUrl}
+                                  alt={artist.name}
+                                  referrerPolicy="no-referrer"
+                                  className="w-5 h-5 rounded-full object-cover flex-shrink-0 border border-zinc-700"
+                                />
+                              ) : (
+                                <div className="w-5 h-5 rounded-full bg-zinc-800 text-[#1DB954] flex items-center justify-center font-bold text-[9px] flex-shrink-0 border border-zinc-700 select-none">
+                                  {artist.name.charAt(0).toUpperCase()}
+                                </div>
+                              )}
+                              <span className="truncate max-w-[120px]">{artist.name}</span>
                               <button
-                                onClick={() => handleRemoveArtist(artist)}
-                                className="text-zinc-500 hover:text-red-400 p-0.5 rounded-full hover:bg-zinc-800 transition-colors"
+                                onClick={() => handleRemoveArtist(artist.name)}
+                                className="text-zinc-500 hover:text-red-400 p-0.5 rounded-full hover:bg-zinc-850 transition-colors"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -818,7 +1029,7 @@ export default function App() {
 
                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 max-h-56 overflow-y-auto pr-1 scrollbar-thin">
                         {filteredPresets.map((preset) => {
-                          const isSelected = selectedArtists.includes(preset.name);
+                          const isSelected = selectedArtists.some((a) => a.name.toLowerCase() === preset.name.toLowerCase());
                           return (
                             <button
                               key={preset.name}
