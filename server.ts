@@ -315,21 +315,28 @@ const PORT = 3000;
 
   // API Route - Get Config
   app.get("/api/spotify/config", (req, res) => {
-    res.json({
-      configured: !!(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET),
-      clientId: process.env.SPOTIFY_CLIENT_ID || "",
-      redirectUri: getRedirectUri(req, PORT),
-    });
+    try {
+      res.json({
+        configured: !!(process.env.SPOTIFY_CLIENT_ID && process.env.SPOTIFY_CLIENT_SECRET),
+        clientId: process.env.SPOTIFY_CLIENT_ID || "",
+        redirectUri: getRedirectUri(req, PORT),
+      });
+    } catch (err: any) {
+      console.error("Error in /api/spotify/config:", err);
+      res.status(500).json({ error: `Failed to compile server configuration: ${err.message || err}` });
+    }
   });
 
   // API Route - Generate Playlist (hybrid curation engine using Spotify metadata + Gemini AI)
   app.post("/api/generate-playlist", async (req: express.Request, res: express.Response) => {
-    const { artists, vibePreference, vibeId, spotifyRankingOnly, userAccessToken } = req.body;
-    const songsPerArtist = Math.max(1, Math.min(10, parseInt(req.body.songsPerArtist) || 4));
     const logs: Array<{ timestamp: string; level: string; message: string }> = [];
 
     const getFormattedTime = () => {
-      return new Date().toISOString().split("T")[1].slice(0, 8);
+      try {
+        return new Date().toISOString().split("T")[1].slice(0, 8);
+      } catch (_) {
+        return "00:00:00";
+      }
     };
 
     const addLog = (level: "info" | "warn" | "error" | "success", message: string) => {
@@ -338,28 +345,35 @@ const PORT = 3000;
       console.log(`[GEN_CANDIDATE] [${level.toUpperCase()}] ${message}`);
     };
 
-    if (!Array.isArray(artists) || artists.length < 1 || artists.length > 10) {
-      addLog("error", "Received invalid artist selection parameters.");
-      return res.status(400).json({ error: "Please select between 1 and 10 artists." });
-    }
-
-    addLog("info", `Initiated custom blend compilation request for selected artists: ${artists.join(", ")}`);
-    addLog("info", `Desired songs per artist: ${songsPerArtist}`);
-    addLog("info", `User aesthetic mood directives: "${vibePreference || 'none'}"`);
-
-    const isSpotifyRanking = !!spotifyRankingOnly;
-
-    // Verify Gemini API Key availability (unless pure Spotify Ranking is checked)
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (!isSpotifyRanking && !geminiKey) {
-      addLog("error", "GEMINI_API_KEY is not defined in the environment. Please configure it in Settings.");
-      return res.status(400).json({
-        error: "Gemini API key is not configured. Please add GEMINI_API_KEY to AI Studio Settings > Secrets to enable curation.",
-        logs
-      });
-    }
-
     try {
+      if (!req.body) {
+        throw new Error("Request body is empty or null. Ensure your frontend sends content type application/json.");
+      }
+
+      const { artists, vibePreference, vibeId, spotifyRankingOnly, userAccessToken } = req.body;
+      const songsPerArtist = Math.max(1, Math.min(10, parseInt(req.body.songsPerArtist) || 4));
+
+      if (!Array.isArray(artists) || artists.length < 1 || artists.length > 10) {
+        addLog("error", "Received invalid artist selection parameters.");
+        return res.status(400).json({ error: "Please select between 1 and 10 artists." });
+      }
+
+      addLog("info", `Initiated custom blend compilation request for selected artists: ${artists.join(", ")}`);
+      addLog("info", `Desired songs per artist: ${songsPerArtist}`);
+      addLog("info", `User aesthetic mood directives: "${vibePreference || 'none'}"`);
+
+      const isSpotifyRanking = !!spotifyRankingOnly;
+
+      // Verify Gemini API Key availability (unless pure Spotify Ranking is checked)
+      const geminiKey = process.env.GEMINI_API_KEY;
+      if (!isSpotifyRanking && !geminiKey) {
+        addLog("error", "GEMINI_API_KEY is not defined in the environment. Please configure it in Settings.");
+        return res.status(400).json({
+          error: "Gemini API key is not configured. Please add GEMINI_API_KEY to AI Studio Settings > Secrets to enable curation.",
+          logs
+        });
+      }
+
       addLog("info", "Checking Spotify Developer application client configuration...");
       const clientId = process.env.SPOTIFY_CLIENT_ID;
       const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
@@ -373,6 +387,7 @@ const PORT = 3000;
           logs
         });
       }
+
 
       addLog("info", "Requesting application access bearer token from Spotify Accounts service...");
       const creds = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
@@ -1337,10 +1352,17 @@ Return a single JSON object strictly matching this schema:
     }
   });
 
-  // Vite middleware for development (only bound when running locally outside Vercel)
+  // Static assets and dev server
   const isVercel = !!process.env.VERCEL;
 
-  if (!isVercel) {
+  if (isVercel) {
+    // In Vercel serverless environment, serve built Vite static assets and delegate client-side routing to index.html
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  } else {
     if (process.env.NODE_ENV !== "production") {
       import("vite").then(({ createServer }) => {
         createServer({
