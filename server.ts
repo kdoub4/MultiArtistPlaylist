@@ -1340,7 +1340,8 @@ Return a single JSON object strictly matching this schema:
   // Vite middleware and listener setup helper
 async function startViteAndListen() {
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
+    const vitePkg = "vite";
+    const { createServer: createViteServer } = await import(vitePkg);
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1361,6 +1362,8 @@ async function startViteAndListen() {
   }
 }
 
-startViteAndListen();
+if (!process.env.VERCEL) {
+  startViteAndListen();
+}
 
 export { app };
