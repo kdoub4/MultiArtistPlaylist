@@ -89,15 +89,48 @@ export default function App() {
   useEffect(() => {
     // 1. Fetch Spotify server-side config status
     fetch("/api/spotify/config")
-      .then((res) => res.json())
-      .then((data) => setSpotifyConfigured(data))
-      .catch((err) => console.error("Failed to load Spotify configuration:", err));
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error("HTTP status: " + res.status);
+        }
+        return res.json();
+      })
+      .then((data) => {
+        if (data && typeof data.configured === "boolean") {
+          setSpotifyConfigured(data);
+        } else {
+          throw new Error("Malformed schema");
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load server configuration. Falling back to browser-only environment variables:", err);
+        const hasViteClient = !!(import.meta as any).env.VITE_SPOTIFY_CLIENT_ID;
+        setSpotifyConfigured({
+          configured: hasViteClient || false,
+          clientId: (import.meta as any).env.VITE_SPOTIFY_CLIENT_ID || "",
+          redirectUri: (import.meta as any).env.VITE_SPOTIFY_REDIRECT_URI || window.location.origin
+        });
+      });
 
-    // 2. Parse OAuth tokens from callback URL redirect parameters
+    // 2. Parse OAuth tokens from callback URL redirect parameters or fragment hash
     const urlParams = new URLSearchParams(window.location.search);
-    const token = urlParams.get("spotify_access_token");
-    const expiresIn = urlParams.get("spotify_expires_in");
-    const scopes = urlParams.get("spotify_scopes");
+    let token = urlParams.get("spotify_access_token");
+    let expiresIn = urlParams.get("spotify_expires_in");
+    let scopes = urlParams.get("spotify_scopes");
+
+    // Seamless implicit grant hash fragment parsing for Vercel/client-only deployments
+    if (window.location.hash) {
+      const hashClean = window.location.hash.substring(1);
+      const hashParams = new URLSearchParams(hashClean);
+      const hashToken = hashParams.get("access_token");
+      const hashExpires = hashParams.get("expires_in");
+      const hashScope = hashParams.get("scope");
+      if (hashToken) {
+        token = hashToken;
+        expiresIn = hashExpires || "3600";
+        scopes = hashScope || "playlist-modify-public playlist-modify-private user-read-private";
+      }
+    }
 
     if (token) {
       localStorage.setItem("spotify_access_token", token);
@@ -108,7 +141,7 @@ export default function App() {
         setTokenScopes(scopes);
       }
 
-      // Clean query parameters from URL history smoothly
+      // Clean query and fragment parameters from URL history smoothly
       const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
       window.history.replaceState({ path: cleanUrl }, "", cleanUrl);
       setAccessToken(token);
@@ -161,18 +194,22 @@ export default function App() {
   // Popup-based Spotify Login handler to bypass iframe blockages
   const handleSpotifyLogin = (e?: React.MouseEvent) => {
     if (e) e.preventDefault();
-    if (!spotifyConfigured.configured || !spotifyConfigured.clientId) {
-      setError("Spotify developer credentials are not fully configured yet in the Settings panel.");
-      setTimeout(() => setError(null), 5000);
+    if (!spotifyConfigured.clientId) {
+      setError("Spotify Developer credentials are not detected. To enable Spotify features on Vercel, please add 'VITE_SPOTIFY_CLIENT_ID' in your Vercel Environment Variables.");
+      setTimeout(() => setError(null), 7000);
       return;
     }
 
+    const isVercelHost = window.location.hostname !== "localhost" && !window.location.hostname.endsWith(".run.app");
+    const isStaticDeploy = isVercelHost || !spotifyConfigured.redirectUri || spotifyConfigured.redirectUri.includes(window.location.origin) && !window.location.href.includes(":3000");
+
     const clientId = spotifyConfigured.clientId;
-    const redirectUri = spotifyConfigured.redirectUri || `${window.location.origin}/api/spotify/callback`;
+    const redirectUri = isStaticDeploy ? window.location.origin : (spotifyConfigured.redirectUri || `${window.location.origin}/api/spotify/callback`);
+    const responseType = isStaticDeploy ? "token" : "code";
     const scope = "playlist-modify-public playlist-modify-private user-read-private";
     const state = "spotify-gen-v1-state";
 
-    let spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}&show_dialog=true`;
+    let spotifyAuthUrl = `https://accounts.spotify.com/authorize?response_type=${responseType}&client_id=${clientId}&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}&show_dialog=true`;
 
     if (spotifyUsername) {
       const uStr = spotifyUsername.trim();
@@ -370,6 +407,346 @@ export default function App() {
     setReorderedTracks(reorderedTracks.filter((_, i) => i !== index));
   };
 
+  // Complete Browser-Based Curation and Spotify Catalog matching fallback for Vercel
+  const handleClientSideGeneratePlaylist = async (): Promise<PlaylistData> => {
+    if (!accessToken) {
+      throw new Error("No Spotify connection detected. Please connect your Spotify account using 'Connect Spotify' first.");
+    }
+
+    const localLogs: Array<{ timestamp: string; level: string; message: string }> = [];
+    const addLocalLog = (level: "info" | "warn" | "error" | "success", message: string) => {
+      localLogs.push({
+        timestamp: new Date().toLocaleTimeString(),
+        level,
+        message
+      });
+      setExecutionLogs([...localLogs]);
+    };
+
+    addLocalLog("info", "Executing Browser-Based Live Curation (Client-only direct connection)...");
+
+    const resolvedArtists: any[] = [];
+    for (const artistName of selectedArtists) {
+      addLocalLog("info", `Searching Spotify Catalog (client) for: "${artistName}"`);
+      const searchQuery = `artist:"${artistName}"`;
+      const searchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=artist&limit=5`;
+      
+      let artistItem: any = null;
+      try {
+        const trResponse = await fetch(searchUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (trResponse.ok) {
+          const searchData = await trResponse.json();
+          const items = searchData.artists?.items || [];
+          artistItem = items.find(
+            (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
+          ) || items[0];
+        }
+      } catch (err) {
+        console.warn("Client strict artist search failed", err);
+      }
+
+      if (!artistItem) {
+        try {
+          const fallbackUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(artistName)}&type=artist&limit=5`;
+          const fallbackRes = await fetch(fallbackUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` }
+          });
+          if (fallbackRes.ok) {
+            const fallbackData = await fallbackRes.json();
+            const items = fallbackData.artists?.items || [];
+            artistItem = items.find(
+              (item: any) => item && item.name && item.name.toLowerCase().trim() === artistName.toLowerCase().trim()
+            ) || items[0];
+          }
+        } catch (err) {
+          console.error("Client open fallback search failed", err);
+        }
+      }
+
+      if (!artistItem) {
+        addLocalLog("warn", `Could not find profiles matching "${artistName}" on Spotify. Skipping.`);
+        continue;
+      }
+
+      const actualArtistName = artistItem.name;
+      const genres = Array.isArray(artistItem.genres) && artistItem.genres.length > 0 ? artistItem.genres.slice(0, 3) : ["Universal Curation"];
+      addLocalLog("success", `Resolved profile: "${actualArtistName}"`);
+
+      // Resolve tracks pool from Spotify Catalog
+      const trackSearchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(`artist:"${actualArtistName}"`)}&type=track&limit=10`;
+      let rawTracksList: any[] = [];
+      try {
+        const trRes = await fetch(trackSearchUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        });
+        if (trRes.ok) {
+          const trData = await trRes.json();
+          rawTracksList = trData.tracks?.items || [];
+          addLocalLog("success", `Direct track search succeeded and found ${rawTracksList.length} tracks.`);
+        }
+      } catch (err: any) {
+        addLocalLog("error", `Exception during Spotify track search: ${err.message}`);
+      }
+
+      if (rawTracksList.length === 0) {
+        addLocalLog("warn", `Zero tracks found for artist "${actualArtistName}". Skipping.`);
+        continue;
+      }
+
+      // Generate avatar color
+      let hash = 0;
+      for (let i = 0; i < actualArtistName.length; i++) {
+        hash = actualArtistName.charCodeAt(i) + ((hash << 5) - hash);
+      }
+      const hexColors = ["#1E1B4B", "#115E59", "#111827", "#1E3A8A", "#311042", "#064E3B", "#3F1616", "#1C1917"];
+      const avatarPlaceholderColor = hexColors[Math.abs(hash) % hexColors.length];
+
+      resolvedArtists.push({
+        originalName: artistName,
+        actualName: actualArtistName,
+        genres,
+        avatarPlaceholderColor,
+        rawTracks: rawTracksList
+      });
+    }
+
+    if (resolvedArtists.length === 0) {
+      throw new Error("None of the selected artists could be found on Spotify search.");
+    }
+
+    const clientGeminiKey = (import.meta as any).env.VITE_GEMINI_API_KEY;
+
+    if (spotifyRankingOnly || !clientGeminiKey) {
+      if (!spotifyRankingOnly) {
+        addLocalLog("warn", "No client-side Gemini API key detected (VITE_GEMINI_API_KEY). Proceeding with direct catalog playlist blend.");
+      } else {
+        addLocalLog("info", "Bypassing Gemini - compiling raw Spotify Popularity selection...");
+      }
+
+      const firstTwoNames = resolvedArtists.slice(0, 2).map((ra) => ra.actualName).join(" & ");
+      const finalTitle = `${firstTwoNames}${resolvedArtists.length > 2 ? " + More" : ""}`.slice(0, 30);
+      const allNames = resolvedArtists.map((ra) => ra.actualName).join(", ");
+      const finalDescription = `Featured track selections for ${allNames}. Real-time metadata blend, no AI filters.`;
+
+      const generateProgrammaticFact = (artistName: string, trackName: string, albumName: string, releaseYear: string) => {
+        const templates = [
+          `An outstanding hit by ${artistName} from the acclaimed album '${albumName}' (${releaseYear}).`,
+          `This brilliant track by ${artistName} is one of the most celebrated highlights from the album '${albumName}'.`,
+          `A signature masterpiece by ${artistName} that remains a fan-favorite since debuting in ${releaseYear}.`,
+          `Features some of the most memorable hooks and artistic production of ${artistName}'s discography.`,
+          `Representing the peak creative era of ${artistName}, from the landmark release '${albumName}'.`
+        ];
+        const index = (trackName.length + albumName.length) % templates.length;
+        return templates[index];
+      };
+
+      const artistsData = resolvedArtists.map((ra) => {
+        const rawPool = ra.rawTracks.slice(0, 10);
+        const tracksWithOriginalRank = rawPool.map((rt: any, idx: number) => ({
+          rt,
+          originalRank: idx + 1
+        }));
+
+        // Simple browser shuffle and slice
+        const shuffled = [...tracksWithOriginalRank].sort(() => Math.random() - 0.5);
+        const selected = shuffled.slice(0, songsPerArtist);
+
+        const songs = selected.map(({ rt, originalRank }) => {
+          let durationStr = "3:45";
+          let durationSec = 225;
+          if (rt.duration_ms) {
+            durationSec = Math.floor(rt.duration_ms / 1000);
+            const m = Math.floor(durationSec / 60);
+            const s = durationSec % 60;
+            durationStr = `${m}:${s < 10 ? '0' : ''}${s}`;
+          }
+
+          const albumName = rt.album?.name || "Single";
+          const releaseYear = (rt.album?.release_date || "2020").slice(0, 4);
+
+          return {
+            title: rt.name,
+            album: albumName,
+            releaseYear,
+            duration: durationStr,
+            durationSeconds: durationSec,
+            spotifySearchQuery: `${ra.actualName} - ${rt.name}`,
+            popularity: rt.popularity || 50,
+            rankingOrdinal: originalRank,
+            id: rt.id,
+            uri: rt.uri,
+            href: rt.external_urls?.spotify || `https://open.spotify.com/search/${encodeURIComponent(ra.actualName + " - " + rt.name)}`,
+            previewUrl: rt.preview_url,
+            albumCover: rt.album?.images?.[0]?.url || rt.album?.images?.[1]?.url || "",
+            fact: spotifyRankingOnly ? "" : generateProgrammaticFact(ra.actualName, rt.name, albumName, releaseYear)
+          };
+        });
+
+        return {
+          name: ra.actualName,
+          genres: ra.genres,
+          avatarPlaceholderColor: ra.avatarPlaceholderColor,
+          songs
+        };
+      });
+
+      addLocalLog("success", "Curation synthesis complete!");
+      return {
+        playlistTitle: finalTitle,
+        playlistDescription: finalDescription,
+        artists: artistsData
+      };
+    } else {
+      addLocalLog("info", "Contactant local-host client Gemini model API endpoint for customized genre blending...");
+      
+      const artistProfilesContext = resolvedArtists.map((ra) => {
+        const trackSummaries = ra.rawTracks.slice(0, 30).map((t: any) => `- "${t.name}" on album "${t.album?.name || 'Single'}" (${(t.album?.release_date || '').slice(0, 4) || 'Unknown'})`).join("\n");
+        return `Artist Name: "${ra.actualName}"\nResolved Tracks Pool:\n${trackSummaries}`;
+      }).join("\n\n");
+
+      const activeVibe = PRESET_VIBES.find((v) => v.id === selectedVibe);
+      const moodInstruction = activeVibe ? `${activeVibe.name} (${activeVibe.desc}). ${customInstructions}` : customInstructions;
+      const targetSongsCount = selectedVibe === "default" ? 15 : songsPerArtist;
+
+      const geminiPrompt = `
+You are an expert, highly knowledgeable music curator with deep, detailed trivia knowledge of bands, singers, albums, and songs.
+We are building a highly cohesive, professional collaborative blend playlist for the following artists: ${resolvedArtists.map((ra) => ra.actualName).join(", ")}.
+We want this playlist to adhere carefully to the following aesthetic vibe/mood: "${moodInstruction || 'Default Pop/Rock Masterpieces'}".
+
+For each resolved artist, here are the track records we found for them on the Spotify Music Catalog:
+${artistProfilesContext}
+
+Your curating tasks are:
+1. Playlist metadata:
+   - Create a beautiful, creative playlist name. Important rule: MAXIMUM 30 characters.
+   - Write a cohesive, compelling, and descriptive summary/bio for this playlist (MAXIMUM 300 characters). Highlight how these artists fuse under the requested vibe criteria.
+2. Curation list per artist:
+   - For each artist, curate EXACTLY ${targetSongsCount} of their most iconic, popular, and essential tracks.
+   - Order them from #1 (most iconic/popular/essential under this specific vibe) down to #${targetSongsCount}.
+   - Prefer newer songs slightly if they fit the requested vibe elegantly, but maintain the overall prestige level of the track.
+   - Try to favor track titles from the provided Spotify search pool context above to maximize matching, but feel free to suggest other iconic masterpieces if they are genuinely the artist's legendary songs.
+   - For each song, assign rankingOrdinal (integer from 1 to ${targetSongsCount} inside the artist's list).
+   - Write a highly fascinating, fun, true, and educational fact or trivia about each track under 100 characters. Do NOT use generic text like "Classic track by..." or "Released in YYYY".
+
+Return a single JSON object strictly matching this schema:
+{
+  "playlistTitle": "The playlist name (max 30 chars)",
+  "playlistDescription": "The playlist description (max 300 chars)",
+  "artists": [
+    {
+      "artistName": "Exact Resolved Artist Name matching the context input",
+      "songs": [
+        {
+          "title": "Exact Title of Song",
+          "album": "Album name",
+          "releaseYear": "YYYY",
+          "rankingOrdinal": 1,
+          "fact": "Fascinating trivia string"
+        }
+      ]
+    }
+  ]
+}
+`;
+
+      const gResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${clientGeminiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: geminiPrompt }] }],
+          generationConfig: { responseMimeType: "application/json" }
+        })
+      });
+
+      if (!gResponse.ok) {
+        throw new Error(`Gemini client API returned HTTP status ${gResponse.status}`);
+      }
+
+      const gResult = await gResponse.json();
+      const rawText = gResult.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      const cleanJson = rawText.trim().replace(/^```json\s*/i, "").replace(/```$/, "").trim();
+      const data = JSON.parse(cleanJson);
+
+      let finalTitle = data.playlistTitle || "Vibe Blend Curation";
+      if (finalTitle.length > 30) {
+        finalTitle = finalTitle.slice(0, 27) + "...";
+      }
+      let finalDescription = data.playlistDescription || "A curated custom blend.";
+      if (finalDescription.length > 300) {
+        finalDescription = finalDescription.slice(0, 297) + "...";
+      }
+
+      const artistsData = resolvedArtists.map((ra) => {
+        const geminiArtData = data.artists?.find(
+          (a: any) => a && a.artistName && (
+            a.artistName.toLowerCase().trim() === ra.actualName.toLowerCase().trim() ||
+            a.artistName.toLowerCase().includes(ra.actualName.toLowerCase()) ||
+            ra.actualName.toLowerCase().includes(a.artistName.toLowerCase())
+          )
+        ) || data.artists?.[resolvedArtists.indexOf(ra)] || { artistName: ra.actualName, songs: [] };
+
+        const isDefaultVibe = selectedVibe === "default";
+        let slicedSongsCandidates = [];
+        if (isDefaultVibe) {
+          const randomizedCurationSongs = [...(geminiArtData.songs || [])].sort(() => Math.random() - 0.5);
+          slicedSongsCandidates = randomizedCurationSongs.slice(0, Math.min(songsPerArtist, randomizedCurationSongs.length));
+        } else {
+          slicedSongsCandidates = geminiArtData.songs || [];
+        }
+
+        const songs = slicedSongsCandidates.map((gemSong: any) => {
+          const matchedTrack = ra.rawTracks.find((t: any) => {
+            const tName = (t.name || "").toLowerCase();
+            const gName = (gemSong.title || "").toLowerCase();
+            return tName === gName || tName.includes(gName) || gName.includes(tName);
+          }) || ra.rawTracks[0];
+
+          let durationStr = "3:45";
+          let durationSec = 225;
+          if (matchedTrack && matchedTrack.duration_ms) {
+            durationSec = Math.floor(matchedTrack.duration_ms / 1000);
+            const m = Math.floor(durationSec / 60);
+            const s = durationSec % 60;
+            durationStr = `${m}:${s < 10 ? '0' : ''}${s}`;
+          }
+
+          return {
+            title: gemSong.title || (matchedTrack ? matchedTrack.name : "Track"),
+            album: gemSong.album || (matchedTrack ? matchedTrack.album?.name : "Single"),
+            releaseYear: gemSong.releaseYear || (matchedTrack ? (matchedTrack.album?.release_date || "2020").slice(0, 4) : "2020"),
+            duration: durationStr,
+            durationSeconds: durationSec,
+            spotifySearchQuery: `${ra.actualName} - ${gemSong.title}`,
+            popularity: matchedTrack ? (matchedTrack.popularity || 50) : 50,
+            rankingOrdinal: gemSong.rankingOrdinal || 1,
+            id: matchedTrack ? matchedTrack.id : null,
+            uri: matchedTrack ? matchedTrack.uri : null,
+            href: (matchedTrack && matchedTrack.external_urls?.spotify) || `https://open.spotify.com/search/${encodeURIComponent(ra.actualName + " - " + gemSong.title)}`,
+            previewUrl: matchedTrack ? matchedTrack.previewUrl : null,
+            albumCover: (matchedTrack && matchedTrack.album?.images?.[0]?.url) || "",
+            fact: gemSong.fact || ""
+          };
+        });
+
+        return {
+          name: ra.actualName,
+          genres: ra.genres,
+          avatarPlaceholderColor: ra.avatarPlaceholderColor,
+          songs
+        };
+      });
+
+      addLocalLog("success", "Successfully received AI curation metadata from client-side Gemini content generation!");
+      return {
+        playlistTitle: finalTitle,
+        playlistDescription: finalDescription,
+        artists: artistsData
+      };
+    }
+  };
+
   // Generate Playlist triggers
   const handleGeneratePlaylist = async () => {
     if (selectedArtists.length < 1) {
@@ -410,85 +787,105 @@ export default function App() {
       const activeVibe = PRESET_VIBES.find((v) => v.id === selectedVibe);
       const moodInstruction = activeVibe ? `${activeVibe.name} (${activeVibe.desc}). ${customInstructions}` : customInstructions;
 
-      const response = await fetch("/api/generate-playlist", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          artists: selectedArtists,
-          vibePreference: moodInstruction,
-          songsPerArtist,
-          vibeId: selectedVibe,
-          spotifyRankingOnly,
-          userAccessToken: accessToken,
-        }),
-      });
+      let response: Response | null = null;
+      let isServerNotFound = false;
 
-      let data: any = {};
-      const responseText = await response.text();
       try {
-        data = JSON.parse(responseText);
-      } catch (parseErr) {
-        if (!response.ok) {
-          throw new Error(`Failed to generate playlist metadata. Server returned status ${response.status}.`);
-        }
-        throw new Error("Invalid response format received from server.");
-      }
-      
-      if (data.logs) {
-        setExecutionLogs(data.logs);
-      }
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to generate playlist metadata.");
-      }
-
-      const generatedData: PlaylistData = data;
-
-      // Trigger automatic background enrichment of Track IDs, real covers, and audios from Spotify
-      try {
-        setLoadingStep("Matching tracks with real-time Spotify catalog visuals & previews...");
-        const queries = generatedData.artists.flatMap((art) =>
-          art.songs.map((s) => `${art.name} - ${s.title}`)
-        );
-
-        const enrichResponse = await fetch("/api/spotify/enrich", {
+        response = await fetch("/api/generate-playlist", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ queries }),
+          body: JSON.stringify({
+            artists: selectedArtists,
+            vibePreference: moodInstruction,
+            songsPerArtist,
+            vibeId: selectedVibe,
+            spotifyRankingOnly,
+            userAccessToken: accessToken,
+          }),
         });
 
-        if (enrichResponse.ok) {
-          const enrichData = await enrichResponse.json();
-          if (enrichData.enriched && Array.isArray(enrichData.tracks)) {
-            // Map enriched artifacts back into our playlist state structure
-            const enrichedArtists = generatedData.artists.map((art) => {
-              const updatedSongs = art.songs.map((song) => {
-                const queryStr = `${art.name} - ${song.title}`.toLowerCase();
-                const matched = enrichData.tracks.find(
-                  (t: any) => t.query && t.query.toLowerCase() === queryStr
-                );
-                if (matched) {
-                  return {
-                    ...song,
-                    id: matched.id,
-                    uri: matched.uri,
-                    href: matched.href,
-                    previewUrl: matched.previewUrl,
-                    albumCover: matched.albumCover,
-                    // Optionally use real live Spotify popularity
-                    popularity: matched.popularity || song.popularity,
-                  };
-                }
-                return song;
-              });
-              return { ...art, songs: updatedSongs };
-            });
-
-            generatedData.artists = enrichedArtists;
-          }
+        if (response && response.status === 404) {
+          isServerNotFound = true;
         }
-      } catch (enrichErr) {
-        console.warn("Spotify catalog search enrichment bypassed:", enrichErr);
+      } catch (fetchErr) {
+        console.warn("Backend unavailable, initiating failover...", fetchErr);
+        isServerNotFound = true;
+      }
+
+      let generatedData: PlaylistData;
+
+      if (isServerNotFound) {
+        // Run Client-Side direct Spotify Curation fallback
+        generatedData = await handleClientSideGeneratePlaylist();
+      } else {
+        // Normal server-side route
+        if (!response) throw new Error("Could not contact the generation endpoint.");
+
+        let data: any = {};
+        const responseText = await response.text();
+        try {
+          data = JSON.parse(responseText);
+        } catch (parseErr) {
+          if (!response.ok) {
+            throw new Error(`Failed to generate playlist metadata. Server returned status ${response.status}.`);
+          }
+          throw new Error("Invalid response format received from server.");
+        }
+        
+        if (data.logs) {
+          setExecutionLogs(data.logs);
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to generate playlist metadata.");
+        }
+
+        generatedData = data;
+
+        // Trigger automatic background enrichment of Track IDs, real covers, and audios from Spotify
+        try {
+          setLoadingStep("Matching tracks with real-time Spotify catalog visuals & previews...");
+          const queries = generatedData.artists.flatMap((art) =>
+            art.songs.map((s) => `${art.name} - ${s.title}`)
+          );
+
+          const enrichResponse = await fetch("/api/spotify/enrich", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ queries }),
+          });
+
+          if (enrichResponse.ok) {
+            const enrichData = await enrichResponse.ok ? await enrichResponse.json() : null;
+            if (enrichData && enrichData.enriched && Array.isArray(enrichData.tracks)) {
+              const enrichedArtists = generatedData.artists.map((art) => {
+                const updatedSongs = art.songs.map((song) => {
+                  const queryStr = `${art.name} - ${song.title}`.toLowerCase();
+                  const matched = enrichData.tracks.find(
+                    (t: any) => t.query && t.query.toLowerCase() === queryStr
+                  );
+                  if (matched) {
+                    return {
+                      ...song,
+                      id: matched.id,
+                      uri: matched.uri,
+                      href: matched.href,
+                      previewUrl: matched.previewUrl,
+                      albumCover: matched.albumCover,
+                      popularity: matched.popularity || song.popularity,
+                    };
+                  }
+                  return song;
+                });
+                return { ...art, songs: updatedSongs };
+              });
+
+              generatedData.artists = enrichedArtists;
+            }
+          }
+        } catch (enrichErr) {
+          console.warn("Spotify catalog search enrichment bypassed:", enrichErr);
+        }
       }
 
       setPlaylist(generatedData);
