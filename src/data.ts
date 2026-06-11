@@ -26,5 +26,6 @@ export const PRESET_VIBES = [
   { id: "chill", name: "Chill & Gentle", desc: "Select soft, acoustic, and low-tempo top masterworks" },
   { id: "energy", name: "High Energy Workout", desc: "Select heavy, driving, high-BPM tracks to amplify focus" },
   { id: "moody", name: "Midnight Moods", desc: "Select deep, atmospheric, nocturnal, and emotional cuts" },
-  { id: "classic", name: "Hidden Gems & Icons", desc: "Focus on iconic, vintage, or storytelling tracks" }
+  { id: "classic", name: "Hidden Gems & Icons", desc: "Focus on iconic, vintage, or storytelling tracks" 0},
+  { id: "roadtrip", name: "Roadtrip", desc: "Anthemic, high-energy, and perfect for singing along with the windows down."}
 ];
