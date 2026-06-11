@@ -309,10 +309,10 @@ async function spotifyFetchWithFallback(
   return { ok: false, status: finalStatus, data: null, source: null, errorBody: finalError };
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+const PORT = 3000;
 
+async function startServer() {
   app.use(express.json());
 
   // API Route - Get Config
@@ -1346,7 +1346,7 @@ Return a single JSON object strictly matching this schema:
       appType: "spa",
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -1354,9 +1354,13 @@ Return a single JSON object strictly matching this schema:
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  if (!process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export { app };
