@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Play,
-  Pause,
   ArrowLeft,
   AlertCircle,
   Trash2,
@@ -22,8 +20,6 @@ import {
   Disc,
   ListTodo,
   Volume2,
-  Terminal,
-  Wrench,
   ChevronDown,
   ChevronUp
 } from "lucide-react";
@@ -80,10 +76,6 @@ export default function App() {
   // Live Syncing state
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<{ url: string; count: number } | null>(null);
-
-  // Browser Audio preview state
-  const [playingTrack, setPlayingTrack] = useState<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Load config & OAuth parameters from query
   useEffect(() => {
@@ -327,37 +319,6 @@ export default function App() {
       setReorderedTracks([]);
     }
   }, [playlist, flattenedTracks]);
-
-  // Audio Handler
-  const togglePlayPreview = (track: Song & { artistName: string }) => {
-    if (!track.previewUrl) return;
-
-    if (playingTrack === track.spotifySearchQuery && audioRef.current) {
-      audioRef.current.pause();
-      setPlayingTrack(null);
-    } else {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-      const audio = new Audio(track.previewUrl);
-      audio.volume = 0.45;
-      audio.addEventListener("ended", () => {
-        setPlayingTrack(null);
-      });
-      audioRef.current = audio;
-      audio.play().catch((err) => console.error("Audio trigger failed:", err));
-      setPlayingTrack(track.spotifySearchQuery);
-    }
-  };
-
-  // Cleanup audio playbacks
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-    };
-  }, []);
 
   // Reordering action utils
   const moveTrack = (index: number, direction: "up" | "down") => {
@@ -1117,7 +1078,6 @@ export default function App() {
                       <div className="space-y-2 max-h-[720px] overflow-y-auto pr-1 scrollbar-thin">
                         <AnimatePresence>
                           {reorderedTracks.map((track, idx) => {
-                            const isPlaying = playingTrack === track.spotifySearchQuery;
                             return (
                               <motion.div
                                 key={`${track.spotifySearchQuery}-${idx}`}
@@ -1126,11 +1086,9 @@ export default function App() {
                                 exit={{ opacity: 0, y: 10 }}
                                 transition={{ duration: 0.2 }}
                                 style={{
-                                  borderLeftColor: isPlaying ? "#1DB954" : track.artistColor || "#1DB954",
+                                  borderLeftColor: track.artistColor || "#1DB954",
                                 }}
-                                className={`group flex flex-col md:flex-row items-stretch md:items-center justify-between p-3.5 rounded-xl border border-zinc-850/60 bg-zinc-950/40 border-l-[4px] hover:bg-zinc-800/30 transition-all ${
-                                  isPlaying ? "shadow-md shadow-[#1DB954]/5 bg-emerald-950/10 border-l-[#1DB954]" : ""
-                                }`}
+                                className="group flex flex-col md:flex-row items-stretch md:items-center justify-between p-3.5 rounded-xl border border-zinc-850/60 bg-zinc-950/40 border-l-[4px] hover:bg-zinc-800/30 transition-all"
                               >
                                 {/* Track identity + basic Info */}
                                 <div className="flex items-center gap-3.5 flex-1 min-w-0">
@@ -1150,21 +1108,6 @@ export default function App() {
                                       >
                                         {track.artistName.charAt(0)}
                                       </div>
-                                    )}
-
-                                    {/* Action Hover play preview trigger if available */}
-                                    {track.previewUrl && (
-                                      <button
-                                        onClick={() => togglePlayPreview(track)}
-                                        className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer"
-                                        title="Play audio preview"
-                                      >
-                                        {isPlaying ? (
-                                          <Pause className="w-4 h-4 text-[#1DB954]" />
-                                        ) : (
-                                          <Play className="w-4 h-4 text-white hover:text-[#1DB954] fill-white hover:fill-[#1DB954]" />
-                                        )}
-                                      </button>
                                     )}
                                   </div>
 
